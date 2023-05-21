@@ -1,4 +1,4 @@
-#include <Servo.h>
+#include <VarSpeedServo.h>
 #include <NewPing.h>
 
 // 0 = Tennis, 1 = Squash
@@ -9,9 +9,9 @@
 //byte ballsDeposited = 0;
 volatile static bool running = false;
 
-#define TRIGGER_PING 5 // Pin 12 UltraSonic Trigger Pin
-#define ECHO_PIN 6 // Pin 2 Ultra Sonic Echo input
-#define MAX_DISTANCE 400 // Maximum distance we want to measure (in centimeters).
+#define TRIGGER_PING 5    // Pin 12 UltraSonic Trigger Pin
+#define ECHO_PIN 6        // Pin 2 Ultra Sonic Echo input
+#define MAX_DISTANCE 400  // Maximum distance we want to measure (in centimeters).
 
 #define POWER_PIN 21
 
@@ -20,18 +20,18 @@ volatile long echo_end = 0;
 volatile long echo_duration = 0;
 volatile int trigger_time_count = 0;
 
-#define SERVO_BASE_PIN 13 // baseServo PMW pin
-#define SERVO_SHOULDER_PIN 12 // Shoulder PMW pin
-#define SERVO_ELBOW_PIN 11 // joint2Servo PMW pin
-#define SERVO_WRIST_PIN 10 // Wrist PMW pin 
-#define SERVO_GRIP_PIN 9 // Grip PMW pin 
-#define HUMERUS 200
-#define HUMERUS_SQR 40000
-#define ULNA 230
-#define ULNA_SQR 52900
+#define SERVO_BASE_PIN 13      // baseServo PMW pin
+#define SERVO_SHOULDER_PIN 12  // Shoulder PMW pin
+#define SERVO_ELBOW_PIN 11     // joint2Servo PMW pin
+#define SERVO_WRIST_PIN 10     // Wrist PMW pin
+#define SERVO_GRIP_PIN 8       // Grip PMW pin
+#define HUMERUS 20.6
+#define HUMERUS_SQR 424.36
+#define ULNA 14.5
+#define ULNA_SQR 210.25
 
-#define BASE_HGT 8.5
-#define GRIPPER 6.94
+#define BASE_HGT 10.4
+#define GRIPPER 7.5
 
 #define MOTORS_R_PWM 7
 #define MOTORS_R_PIN1 37
@@ -51,26 +51,28 @@ volatile int trigger_time_count = 0;
 #define STATE_PLATFORM_EXTEND 3
 #define STATE_DEPOSIT_BALLS 4
 #define STATE_PLATFORM_RETRACTED 5
+#define STATE_RETURN_HOME 6
+#define STATE_FINISHED 7
 
 
-Servo baseServo;
-Servo shoulderServo;
-Servo elbowServo;
-Servo wristServo;
-Servo gripServo;
+VarSpeedServo baseServo;
+VarSpeedServo shoulderServo;
+VarSpeedServo elbowServo;
+VarSpeedServo wristServo;
+VarSpeedServo gripServo;
 
 NewPing sonar(TRIGGER_PING, ECHO_PIN, MAX_DISTANCE);
 bool tennis = false;
 
 enum wheelMotion {
- STOP,
- FORWARD,
- BACKWARD,
- LEFT,
- RIGHT
+  STOP,
+  FORWARD,
+  BACKWARD,
+  LEFT,
+  RIGHT
 };
 
-uint8_t state = 0;
+uint8_t state = 1;
 //
 //typedef struct {
 //  // Setup Distance Sensor data struct to allow storage
@@ -83,6 +85,14 @@ void stop_all_motors(void);
 void setup_timer1(void);
 void setup_motors(void);
 void setup_servos(void);
+void set_arm_angles(uint16_t bas_ang, uint16_t shl_ang, uint16_t elb_ang, uint16_t wri_ang);
+void set_arm(unsigned long x, unsigned long y, unsigned long z, unsigned long grip_angle_d);
+void pickup_balls(void);
+void move_to_silo(void);
+void extend_platform(void);
+void deposit_balls(void);
+void return_home(void);
+void retract_platform(void);
 
 void setup() {
   // Connect to io pins
@@ -95,8 +105,10 @@ void setup() {
 
   // pinMode(trigPin, OUTPUT);                        // Trigger pin set to output
   // pinMode(echoPin, INPUT);                        // Echo pin set to input
-  
+
   setup_motors();
+
+  setup_servos();
 
   // pinMode(4, INPUT_PULLUP);
 
@@ -120,7 +132,7 @@ void setup() {
   // Flash led to show system start
 }
 
-void setup_motors(void){
+void setup_motors(void) {
   pinMode(MOTORS_R_PWM, OUTPUT);
   pinMode(MOTORS_R_PIN1, OUTPUT);
   pinMode(MOTORS_R_PIN2, OUTPUT);
@@ -138,7 +150,7 @@ void setup_motors(void){
   // analogWrite(MOTORS_P_PIN1, 255);
 }
 
-void setup_servos(void){
+void setup_servos(void) {
   baseServo.attach(SERVO_BASE_PIN, 500, 2500);
   shoulderServo.attach(SERVO_SHOULDER_PIN, 500, 2500);
   elbowServo.attach(SERVO_ELBOW_PIN, 500, 2500);
@@ -146,50 +158,50 @@ void setup_servos(void){
   gripServo.attach(SERVO_GRIP_PIN);
 }
 
-void setup_timer1(void){
+void setup_timer1(void) {
 
-  TCNT1 = 0; // Clear Timer
+  TCNT1 = 0;  // Clear Timer
 
   // 65536 = 40 millisecond seconds 16 bit timer
-  OCR1A = 65536;// = (16*10^6) / (4*1024) - 1 (must be <65536)
+  OCR1A = 65536;  // = (16*10^6) / (4*1024) - 1 (must be <65536)
 
   // Setup CTC mode
-  TCCR1B = (1<<WGM12);
+  TCCR1B = (1 << WGM12);
 
   // 1024 prescaler
-  TCCR1B |= (1<<CS12)|(1<<CS10);
+  TCCR1B |= (1 << CS12) | (1 << CS10);
 
   // Enable interrupt;
-  TIMSK1 = (1<<OCIE1A);
+  TIMSK1 = (1 << OCIE1A);
 
-  sei(); // Allow intterupts
+  sei();  // Allow intterupts
 }
 
 #define ELAPSED_MAX 7258
 volatile static uint16_t elapsed_count = 0;
 
-ISR(TIMER1_COMPA_vect){
-  if(!running) return;
+ISR(TIMER1_COMPA_vect) {
+  if (!running) return;
   elapsed_count++;
-  if(elapsed_count >= ELAPSED_MAX){
-    Serial.println(buffer);
+  if (elapsed_count >= ELAPSED_MAX) {
     stopAll();
     running = false;
   }
 }
 
-#define BOUNCET	25
+#define BOUNCET 25
 volatile static unsigned long bounceTime = 0;
 
-void powerSwitch(void){
-  if((millis() - bounceTime) > BOUNCET){
+void powerSwitch(void) {
+  if ((millis() - bounceTime) > BOUNCET) {
     running = !running;
-    if(running){
+    if (running) {
       digitalWrite(LED_BUILTIN, HIGH);
       TCNT1 = 0;
       Serial.println("ON");
-    }else{
+    } else {
       stopAll();
+      park_servos();
       running = false;
       Serial.println("Off");
     }
@@ -197,237 +209,189 @@ void powerSwitch(void){
   }
 }
 
-void stopAll(void){
+void stopAll(void) {
   stop_all_motors();
 }
 
 bool printed = false;
 int pos = 0;
 void loop(void) {
-  if(!running) return;
+  if (!running) return;
 
-  // park_servos();
-  // elapsedTime = millis();
-  // if(elapsedTime <= endTime){
-  //   running = false;
-  //   stopAll();
-  //   return;
-  // }
-
-  // switch (state){
-  //   case STATE_MOVETO_BALL:
-  //     move_to_balls();
-  //     break;
-  //   case STATE_PICKUP_BALL:
-  //     break;
-  //   case STATE_MOVETO_SILO:
-  //     break;
-  //   case STATE_PLATFORM_EXTEND:
-  //     break;
-  //   case STATE_PLATFORM_RETRACTED:
-  //     break;
-  //   case default:
-  //     Serial.println("Invalid State");
-  //     break;
-  // }
-  // baseServo.write(90);
-  // Serial.println("Rotated");
-  // if(!running){
-  //   if(false){
-  //     running = true;
-  //     digitalWrite(LED_BUILTIN, HIGH);
-  //     startTime = millis();
-  //   }
-  //   return;
-  // };
-  // elapsedTime = millis();
-  // Stop all system functionality after 120000 milliseconds (120 seconds)
-  // Serial.println((elapsedTime - startTime), DEC);
-  // if ((elapsedTime - startTime) > 120000) {
-    // Flash led to show system stop
-    // Serial.println("END");
-    // exit(0);
-  // }
-
-  // delay(5000);
-  // float theta1;
-  // float theta2;
-  // float theta3;
-  // set_arm(10, 10, 20, theta1, theta2, theta3);
-  // char buffer[100];
-  // sprintf(buffer, "%d, %d, %d", theta1, theta2, theta3);
-  // Serial.println(buffer);
-  // baseServo.write(theta1);
-  // Shoulder.write(theta2);
-  // joint2Servo.write(theta3);
-  // delay(5000);
-  // baseServo.write(45);
-  // Shoulder.write(155);
-  // joint2Servo.write(55);
-  // delay(5000);
-  // Shoulder.write(90);
-  // char buffer[100];
-  // pos = baseServo.read();
-  // sprintf(buffer, "%d", pos);
-  // Serial.println(buffer);
-  // for (pos = baseServo.read(); pos <= 170; pos += 1) { // goes from 0 degrees to 180 degrees
-  //   // in steps of 1 degree
-  //   baseServo.write(pos);
-  //   sprintf(buffer, "%d", pos);
-  //   Serial.println(buffer);
-  //   // Shoulder.write(pos);
-  //   // joint2Servo.write(90);              // tell servo to go to position in variable 'pos'
-  //   delay(15);                       // waits 15 ms for the servo to reach the position
-  // }
-  // for (pos = 170; pos >= 10; pos -= 1) { // goes from 180 degrees to 0 degrees
-  //   baseServo.write(pos);
-  //   sprintf(buffer, "%d", pos);
-  //   Serial.println(buffer);
-  //   // Shoulder.write(pos);
-  //   // joint2Servo.write(pos);              // tell servo to go to position in variable 'pos'
-  //   delay(15);                       // waits 15 ms for the servo to reach the position
-  // }
-
-  
-  // driveDirection(FORWARD);
-  // delay(1000);
-  // driveDirection(BACKWARD);
-  // delay(1000);
-  // driveDirection(LEFT);
-  // delay(1000);
-  // driveDirection(RIGHT);
-  // delay(1000);
-  // driveDirection(STOP);
-
-  // movePlatform(FORWARD);
-  // delay(1000);
-  // movePlatform(BACKWARD);
-  // delay(1000);
-  // movePlatform(STOP);
-  // controlMotor(MOTORS_BL_PIN1, MOTORS_BL_PIN2, MOTORS_BL_PWM, 100, wheelMotion(1));
-  // controlMotor(MOTORS_TR_PIN1, MOTORS_TR_PIN2, MOTORS_TR_PWM, 100, wheelMotion(1));
-  // controlMotor(MOTORS_TL_PIN1, MOTORS_TL_PIN2, MOTORS_TL_PWM, 100, wheelMotion(1));
-  // controlMotor(MOTORS_BR_PIN1, MOTORS_BR_PIN2, MOTORS_BR_PWM, 100, wheelMotion(0));
-  // controlMotor(MOTORS_BL_PIN1, MOTORS_BL_PIN2, MOTORS_BL_PWM, 100, wheelMotion(0));
-  // controlMotor(MOTORS_TR_PIN1, MOTORS_TR_PIN2, MOTORS_TR_PWM, 100, wheelMotion(0));
-  // controlMotor(MOTORS_TL_PIN1, MOTORS_TL_PIN2, MOTORS_TL_PWM, 100, wheelMotion(0));
-
-  //  if(ballsDeposited >= 6){
-  //     // Ensure system has returned to home area
-  //     // Flash led to show system stop
-  //     exit(0);
-  //  }
-  //
-  //  if(collectedBalls){
-  //    if(handleBallDeposit()){
-  //      collectedBalls = false;
-  //      selectedBallType = 1;
-  //    }else{
-  //      // We have balls but haven't sucessfuly deposited them yet
-  //      // so we want to keep
-  //      // looping through the handleBallDeposit function
-  //      return;
-  //    }
-  //  }
-  //
-  //  // Determine distance
-  //  distanceSensorData latestData;
-  //  if(withinRangeOfBalls(latestData)){
-  //    if(handleBallCollection(latestData)){
-  //      collectedBalls = true;
-  //    }else{
-  //      // Reposition in an attempt to sucessfully pick up on the next pass
-  //    }
-  //  }else {
-  //    // Depending on selected Ball type drive to top-right/top-left of
-  //    // lowered section
-  //    // latestData will be used to determing distance and angle
-  //    // needed to move for best chance of being within range in next loop
-  //  }
-  // delay(5000);
-  // She likes a little bit of delay when theres nothing to do
-  // delay(50);
+  switch (state) {
+    case STATE_MOVETO_BALL:
+      // TODO: Move to tennis balls
+      break;
+    case STATE_PICKUP_BALL:
+      pickup_balls();
+      state++;
+      break;
+    case STATE_MOVETO_SILO:
+      move_to_silo();
+      state++;
+      break;
+    case STATE_PLATFORM_EXTEND:
+      extend_platform();
+      state++;
+      break;
+    case STATE_DEPOSIT_BALLS:
+      deposit_balls();
+      state++;
+      break;
+    case STATE_PLATFORM_RETRACTED:
+      retract_platform();
+      state++;
+      break;
+    case STATE_RETURN_HOME:
+      return_home();
+      state++;
+      break
+    case default:
+      break;
+  }
 }
 
-void move_to_balls(void){
+void pickup_balls(void){
   if(tennis){
-    // Move to Tennis balls
+    // TODO: Tennis
   }else{
-    // Move to Squash balls
+    baseServo.write(90, 30, true);
+    set_arm_angles(90, 150, 85, 110);
+    driveDirection(FORWARD);
+    delay(2000);
+    driveDirection(STOP);
+    elbowServo.write(150, 30, true);
+    set_arm_angles(90, 80, 10, 10);
+    gripServo.write(0);
+  }
+}
+
+void move_to_silo(void){
+  if(tennis){
+    // TODO: Tennis
+  }else{
+    driveDirection(RIGHT);
+    delay(3000);
+    driveDirection(FORWARD);
+    delay(1500);
+    driveDirection(STOP);
+  }
+}
+
+void extend_platform(void){
+  if(tennis){
+    // TODO: Tennis
+  }else{
+    movePlatform(FORWARD);
+    delay(1500);
+    movePlatform(STOP);
+  }
+}
+
+void deposit_balls(void){
+  if(tennis){
+    // TODO: Tennis
+  }else{
+    elbowServo.write(110, 30);
+    wristServo.write(50, 30);
+    elbowServo.wait();
+    wristServo.wait();
+    set_arm_angles(90, 110, 145, 55);
+    gripServo.write(180);
+    delay(5000);
+    gripServo.write(0);
+    set_arm_angles(90, 80, 105, 50);
+    set_arm_angles(120, 80, 10, 10);
+  }
+}
+
+void retract_platform(void){
+  if(tennis){
+
+  }else{
+    movePlatform(BACKWARD);
+    delay(1500);
+  }
+}
+
+void return_home(void){
+  if(tennis){
+    // TODO: Tennis
+  }else{
+    driveDirection(BACKWARD);
+    delay(500);
+    movePlatform(STOP);
+    delay(1000);
+    driveDirection(STOP);
   }
 }
 
 void park_servos(void){
-
   baseServo.write(120);
-  shoulderServo.write(0);
+  shoulderServo.write(80);
   elbowServo.write(10);
   wristServo.write(10);
-  gripServo.write(90);
+  gripServo.write(0);
+}
+
+void set_arm_angles(uint16_t bas_ang, uint16_t shl_ang, uint16_t elb_ang, uint16_t wri_ang){
+  if((shl_ang) && shl_ang >= 20 && shl_ang <= 160){
+    shoulderServo.write(shl_ang, 30);
+  }
+  if((elb_ang || elb_ang == 0) && elb_ang >= 0 && elb_ang <= 180){
+    elbowServo.write(elb_ang, 30);
+  }
+  if((bas_ang || bas_ang == 0) && bas_ang <= 160 && bas_ang >= 20){
+    baseServo.write(bas_ang, 30);
+  }
+  
+  if((wri_ang || wri_ang == 0) && wri_ang >= 0 && wri_ang <= 180){
+    wristServo.write(wri_ang, 30);
+  }
+  shoulderServo.wait();
+  elbowServo.wait();
+  baseServo.wait();
+  wristServo.wait();
 }
 
 /* arm positioning routine utilizing inverse kinematics */
 /* z is height, y is distance from base center out, x is side to side. y,z can only be positive */
-void set_arm(float x, float y, float z, float grip_angle_d){
+// TODO: Maths is wrong need to redo it
+void set_arm(unsigned long x, unsigned long y, unsigned long z, unsigned long grip_angle_d){
   if(!running) return;
-  float grip_angle_r = radians( grip_angle_d );
+  unsigned long grip_angle_r = radians( grip_angle_d );
 
-  float bas_angle_r = radians(atan2(y, x));
-  float rdist = sqrt((x*x) * (y*y));
+  unsigned long bas_angle_d = atan2(x, y);
+  unsigned long bas_angle_r = radians(bas_angle_d);
+  unsigned long rdist = sqrt((x*x) * (y*y));
   y = rdist;
 
   // Grip offset Calculations
-  float grip_off_z = (sin(grip_angle_r)) * GRIPPER;
-  float grip_off_y = (cos(grip_angle_r)) * GRIPPER;
+  unsigned long grip_off_z = (sin(grip_angle_r)) * GRIPPER;
+  unsigned long grip_off_y = (cos(grip_angle_r)) * GRIPPER;
 
-  float wrist_z = (z - grip_off_z) - BASE_HGT;
-  float wrist_y = y - grip_off_y;
+  unsigned long wrist_z = (z - grip_off_z) - BASE_HGT;
+  unsigned long wrist_y = y - grip_off_y;
 
-  float s_w = (wrist_z * wrist_z) + (wrist_y * wrist_y);
-  float s_w_sqrt = sqrt(s_w);
+  unsigned long s_w = (wrist_z * wrist_z) + (wrist_y * wrist_y);
+  unsigned long s_w_sqrt = sqrt(s_w);
 
-  float a1 = atan2(wrist_z, wrist_y);
-  float a2 = acos((( HUMERUS_SQR - ULNA_SQR ) + s_w) / (2 * HUMERUS * s_w_sqrt));
+  unsigned long a1 = atan2(wrist_z, wrist_y);
+  unsigned long a2 = acos((( HUMERUS_SQR - ULNA_SQR ) + s_w) / (2 * HUMERUS * s_w_sqrt));
 
-  float shl_angle_r = a1 + a2;
-  float shl_angle_d = degrees( shl_angle_r );
+  unsigned long shl_angle_r = a1 + a2;
+  unsigned long shl_angle_d = degrees( shl_angle_r );
 
-  float elb_angle_r = acos((HUMERUS_SQR + ULNA_SQR - s_w) / (2 * HUMERUS * ULNA));
-  float elb_angle_d = degrees( elb_angle_r );
-  float elb_angle_dn = -(180.0 - elb_angle_d);
+  unsigned long elb_angle_r = acos((HUMERUS_SQR + ULNA_SQR - s_w) / (2 * HUMERUS * ULNA));
+  unsigned long elb_angle_d = degrees( elb_angle_r );
+  unsigned long elb_angle_dn = -(180.0 - elb_angle_d);
 
-  float wri_angle_d = (grip_angle_d - elb_angle_dn) - shl_angle_d;
+  unsigned long wri_angle_d = (grip_angle_d - elb_angle_dn) - shl_angle_d;
+
+  char buffer[100];
+  sprintf(buffer, "%lu, %lu, %lu, %lu", bas_angle_d, shl_angle_d, elb_angle_dn, wri_angle_d);
+  Serial.println(buffer);
 }
-
-
-//boolean withinRangeOfBalls(distanceSensorData &returnData){
-//  // Collect Sensor data and correlate it to determine
-//  // if the system is capable of picking up selected balltype.
-//  // If outof range update returnData to allow system to navigate
-//  // return true if withinrange false otherwise
-//}
-//
-//// Handle ball deposit logic including driving to platform
-//boolean handleBallDeposit(){
-//  // Check ball type
-//  // Depending on ball type drive to top-left/bottom-right
-//  // sections of areana
-//  // Position system until touching wall
-//  // Extend platform
-//  // Deposit balls
-//  // Increment number of ballsDepositied variable
-//  // retract platform
-//  // return True if balls deposited, false otherwise
-//}
-//
-//// Handle ball collection once within range
-//boolean handleBallCollection(distanceSensorData data){
-//  // Use sensor data to position arm
-//  // Use ball type to determin how much the claw needs to close
-//  // Sensor to determin if balls were sucessfully collected
-//  // (possible limit switch/tracking opening of claw/feedback based on resistance)
-//  // return true if balls collected, false otherwise
-//}
 
 void movePlatform(enum wheelMotion m){
   if(m == LEFT || m == RIGHT){
@@ -435,7 +399,7 @@ void movePlatform(enum wheelMotion m){
     return;
   }
   if(!running) return;
-  controlMotor(MOTORS_P_PIN1, MOTORS_P_PIN2, MOTORS_P_PWM, 40, m);
+  controlMotor(MOTORS_P_PIN1, MOTORS_P_PIN2, MOTORS_P_PWM, 50, m);
 }
 
 void driveDirection(enum wheelMotion m){
@@ -445,7 +409,7 @@ void driveDirection(enum wheelMotion m){
       controlMotor(MOTORS_L_PIN1, MOTORS_L_PIN2, MOTORS_L_PWM, 100, BACKWARD);
       controlMotor(MOTORS_R_PIN1, MOTORS_R_PIN2, MOTORS_R_PWM, 100, FORWARD);
       break;
-   case RIGHT:
+    case RIGHT:
       controlMotor(MOTORS_L_PIN1, MOTORS_L_PIN2, MOTORS_L_PWM, 100, FORWARD);
       controlMotor(MOTORS_R_PIN1, MOTORS_R_PIN2, MOTORS_R_PWM, 100, BACKWARD);
       break;
@@ -456,7 +420,7 @@ void driveDirection(enum wheelMotion m){
   }
 }
 
-void stop_all_motors(void){
+void stop_all_motors(void) {
   driveDirection(STOP);
   movePlatform(STOP);
 }
@@ -464,22 +428,22 @@ void stop_all_motors(void){
 //// Pin1 & Pin2 specify pins to control motor Direction,
 //// PwnPin specifies pin to control speed, pwn is speed value,
 //// wheelMotion specifices motor Direction
-void controlMotor(int Pin1, int Pin2, int PwnPin, float pwm, enum wheelMotion m){
-  if(!running) return;
+void controlMotor(int Pin1, int Pin2, int PwnPin, float pwm, enum wheelMotion m) {
+  if (!running) return;
   int pwmSpeed = map(pwm, 0, 100, 0, 255);
   analogWrite(PwnPin, pwmSpeed);
- switch(m){
-   case FORWARD:
-        digitalWrite(Pin1, HIGH);
-        digitalWrite(Pin2, LOW);
-     break;
-   case BACKWARD:
-        digitalWrite(Pin1, LOW);
-        digitalWrite(Pin2, HIGH);
-     break;
-   default:
-        digitalWrite(Pin1, LOW);
-        digitalWrite(Pin2, LOW);
-     break;
- }
+  switch (m) {
+    case FORWARD:
+      digitalWrite(Pin1, HIGH);
+      digitalWrite(Pin2, LOW);
+      break;
+    case BACKWARD:
+      digitalWrite(Pin1, LOW);
+      digitalWrite(Pin2, HIGH);
+      break;
+    default:
+      digitalWrite(Pin1, LOW);
+      digitalWrite(Pin2, LOW);
+      break;
+  }
 }
