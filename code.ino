@@ -22,7 +22,7 @@ volatile int trigger_time_count = 0;
 
 #define SERVO_BASE_PIN 13      // baseServo PMW pin
 #define SERVO_SHOULDER_PIN 12  // Shoulder PMW pin
-#define SERVO_ELBOW_PIN 11     // joint2Servo PMW pin
+#define SERVO_ELBOW_PIN 11     // Elbow PMW pin
 #define SERVO_WRIST_PIN 10     // Wrist PMW pin
 #define SERVO_GRIP_PIN 8       // Grip PMW pin
 #define HUMERUS 20.6
@@ -162,7 +162,7 @@ void setup_timer1(void) {
 
   TCNT1 = 0;  // Clear Timer
 
-  // 65536 = 40 millisecond seconds 16 bit timer
+  // 65536 = approx 40 millisecond seconds 16 bit timer
   OCR1A = 65536;  // = (16*10^6) / (4*1024) - 1 (must be <65536)
 
   // Setup CTC mode
@@ -198,6 +198,7 @@ void powerSwitch(void) {
     if (running) {
       digitalWrite(LED_BUILTIN, HIGH);
       TCNT1 = 0;
+      state = 1;
       Serial.println("ON");
     } else {
       stopAll();
@@ -245,8 +246,8 @@ void loop(void) {
     case STATE_RETURN_HOME:
       return_home();
       state++;
-      break
-    case default:
+      break;
+    default:
       break;
   }
 }
@@ -270,10 +271,12 @@ void move_to_silo(void){
   if(tennis){
     // TODO: Tennis
   }else{
+    driveDirection(BACKWARD);
+    delay(100);
     driveDirection(RIGHT);
-    delay(3000);
+    delay(2400);
     driveDirection(FORWARD);
-    delay(1500);
+    delay(3000);
     driveDirection(STOP);
   }
 }
@@ -283,7 +286,7 @@ void extend_platform(void){
     // TODO: Tennis
   }else{
     movePlatform(FORWARD);
-    delay(1500);
+    delay(750);
     movePlatform(STOP);
   }
 }
@@ -296,7 +299,8 @@ void deposit_balls(void){
     wristServo.write(50, 30);
     elbowServo.wait();
     wristServo.wait();
-    set_arm_angles(90, 110, 145, 55);
+    set_arm_angles(90, 110, 135, 55);
+    delay(500);
     gripServo.write(180);
     delay(5000);
     gripServo.write(0);
@@ -310,7 +314,7 @@ void retract_platform(void){
 
   }else{
     movePlatform(BACKWARD);
-    delay(1500);
+    delay(750);
   }
 }
 
@@ -399,7 +403,7 @@ void movePlatform(enum wheelMotion m){
     return;
   }
   if(!running) return;
-  controlMotor(MOTORS_P_PIN1, MOTORS_P_PIN2, MOTORS_P_PWM, 50, m);
+  controlMotor(MOTORS_P_PIN1, MOTORS_P_PIN2, MOTORS_P_PWM, 100, m);
 }
 
 void driveDirection(enum wheelMotion m){
